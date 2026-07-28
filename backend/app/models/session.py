@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean
 from sqlalchemy import DateTime
@@ -13,6 +14,10 @@ from sqlalchemy.orm import mapped_column
 from sqlalchemy.orm import relationship
 
 from app.db.base import Base
+
+if TYPE_CHECKING:
+    from app.models.refresh_token import RefreshToken
+    from app.models.user import User
 
 
 class Session(Base):
@@ -26,14 +31,11 @@ class Session(Base):
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey(
+            "users.id",
+            ondelete="CASCADE",
+        ),
         nullable=False,
-        index=True,
-    )
-
-    refresh_token_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        nullable=True,
         index=True,
     )
 
@@ -91,14 +93,14 @@ class Session(Base):
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=datetime.utcnow,
         nullable=False,
+        default=lambda: datetime.now().astimezone(),
     )
 
     last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=datetime.utcnow,
         nullable=False,
+        default=lambda: datetime.now().astimezone(),
     )
 
     expires_at: Mapped[datetime] = mapped_column(
@@ -111,8 +113,15 @@ class Session(Base):
         nullable=True,
     )
 
-    user = relationship(
+    user: Mapped["User"] = relationship(
         "User",
-        backref="sessions",
-        lazy="joined",
+        back_populates="sessions",
+        lazy="selectin",
+    )
+
+    refresh_tokens: Mapped[list["RefreshToken"]] = relationship(
+        "RefreshToken",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        lazy="selectin",
     )
