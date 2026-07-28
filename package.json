@@ -1,25 +1,28 @@
 {
   "name": "aura",
-  "private": true,
   "version": "1.0.0",
+  "private": true,
   "description": "AURA - Next Generation AI Companion",
+  "packageManager": "npm@10.9.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "workspaces": [
     "apps/*",
-    "backend",
     "packages/*"
   ],
   "scripts": {
     "dev": "turbo run dev",
     "build": "turbo run build",
     "lint": "turbo run lint",
+    "test": "turbo run test",
     "format": "prettier --write .",
-    "clean": "turbo run clean",
-    "test": "turbo run test"
+    "clean": "turbo run clean"
   },
   "devDependencies": {
-    "prettier": "^3.6.2",
     "turbo": "^2.5.6",
-    "typescript": "^5.9.2"
-  },
-  "packageManager": "npm@10"
+    "typescript": "^5.9.2",
+    "prettier": "^3.6.2",
+    "eslint": "^9.35.0"
+  }
 }
