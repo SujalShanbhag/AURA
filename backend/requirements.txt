@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg2-binary
+alembic
+python-dotenv
+pydantic
+pydantic-settings
+python-jose[cryptography]
+passlib[bcrypt]
+redis
+qdrant-client
+websockets
+httpx
+openai
+google-genai
+anthropic
