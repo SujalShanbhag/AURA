@@ -17,7 +17,6 @@ class SessionRepository:
         self,
         *,
         user_id: UUID,
-        refresh_token_id: UUID | None,
         device_name: str,
         device_type: str,
         operating_system: str,
@@ -32,7 +31,6 @@ class SessionRepository:
 
         session = Session(
             user_id=user_id,
-            refresh_token_id=refresh_token_id,
             device_name=device_name,
             device_type=device_type,
             operating_system=operating_system,
@@ -46,7 +44,8 @@ class SessionRepository:
         )
 
         self.db.add(session)
-        await self.db.commit()
+
+        await self.db.flush()
         await self.db.refresh(session)
 
         return session
@@ -57,20 +56,6 @@ class SessionRepository:
     ) -> Session | None:
 
         return await self.db.get(Session, session_id)
-
-    async def get_active_by_refresh_token(
-        self,
-        refresh_token_id: UUID,
-    ) -> Session | None:
-
-        result = await self.db.execute(
-            select(Session).where(
-                Session.refresh_token_id == refresh_token_id,
-                Session.is_revoked.is_(False),
-            )
-        )
-
-        return result.scalar_one_or_none()
 
     async def list_user_sessions(
         self,
@@ -83,7 +68,9 @@ class SessionRepository:
                 Session.user_id == user_id,
                 Session.is_revoked.is_(False),
             )
-            .order_by(Session.last_seen_at.desc())
+            .order_by(
+                Session.last_seen_at.desc()
+            )
         )
 
         return list(result.scalars().all())
@@ -96,20 +83,7 @@ class SessionRepository:
 
         session.last_seen_at = timestamp
 
-        await self.db.commit()
-        await self.db.refresh(session)
-
-        return session
-
-    async def attach_refresh_token(
-        self,
-        session: Session,
-        refresh_token_id: UUID,
-    ) -> Session:
-
-        session.refresh_token_id = refresh_token_id
-
-        await self.db.commit()
+        await self.db.flush()
         await self.db.refresh(session)
 
         return session
@@ -124,7 +98,7 @@ class SessionRepository:
         session.revoked_at = revoked_at
         session.is_current = False
 
-        await self.db.commit()
+        await self.db.flush()
         await self.db.refresh(session)
 
         return session
@@ -149,7 +123,7 @@ class SessionRepository:
             session.revoked_at = revoked_at
             session.is_current = False
 
-        await self.db.commit()
+        await self.db.flush()
 
     async def delete(
         self,
@@ -157,4 +131,4 @@ class SessionRepository:
     ) -> None:
 
         await self.db.delete(session)
-        await self.db.commit()
+        await self.db.flush()
