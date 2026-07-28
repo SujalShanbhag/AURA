@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean
 from sqlalchemy import DateTime
@@ -13,6 +14,10 @@ from sqlalchemy.orm import mapped_column
 from sqlalchemy.orm import relationship
 
 from app.db.base import Base
+
+if TYPE_CHECKING:
+    from app.models.session import Session
+    from app.models.user import User
 
 
 class RefreshToken(Base):
@@ -26,28 +31,39 @@ class RefreshToken(Base):
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey(
+            "users.id",
+            ondelete="CASCADE",
+        ),
         nullable=False,
         index=True,
     )
 
     session_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("sessions.id", ondelete="CASCADE"),
+        ForeignKey(
+            "sessions.id",
+            ondelete="CASCADE",
+        ),
         nullable=False,
         index=True,
     )
 
     token_hash: Mapped[str] = mapped_column(
-        String(255),
+        String(64),
         nullable=False,
         unique=True,
+        index=True,
     )
 
     parent_token_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("refresh_tokens.id", ondelete="SET NULL"),
+        ForeignKey(
+            "refresh_tokens.id",
+            ondelete="SET NULL",
+        ),
         nullable=True,
+        index=True,
     )
 
     is_revoked: Mapped[bool] = mapped_column(
@@ -61,14 +77,14 @@ class RefreshToken(Base):
         nullable=True,
     )
 
-    expires_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-    )
-
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=datetime.utcnow,
+        nullable=False,
+        default=lambda: datetime.now().astimezone(),
+    )
+
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
         nullable=False,
     )
 
@@ -82,18 +98,28 @@ class RefreshToken(Base):
         nullable=True,
     )
 
-    user = relationship(
+    user: Mapped["User"] = relationship(
         "User",
-        lazy="joined",
+        back_populates="refresh_tokens",
+        lazy="selectin",
     )
 
-    session = relationship(
+    session: Mapped["Session"] = relationship(
         "Session",
-        lazy="joined",
+        back_populates="refresh_tokens",
+        lazy="selectin",
     )
 
-    parent = relationship(
+    parent: Mapped["RefreshToken | None"] = relationship(
         "RefreshToken",
-        remote_side=[id],
-        lazy="joined",
+        remote_side="RefreshToken.id",
+        back_populates="children",
+        lazy="selectin",
+    )
+
+    children: Mapped[list["RefreshToken"]] = relationship(
+        "RefreshToken",
+        back_populates="parent",
+        cascade="all, delete-orphan",
+        lazy="selectin",
     )
