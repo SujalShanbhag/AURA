@@ -9,7 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.security import hash_password
 from app.core.security import verify_password
-from app.repositories.user_repository import UserRepository
+from app.repositories.refresh_token_repository import (
+    RefreshTokenRepository,
+)
+from app.repositories.user_repository import (
+    UserRepository,
+)
 from app.schemas.auth import LoginRequest
 from app.schemas.auth import RegisterRequest
 from app.services.session_service import SessionService
@@ -20,16 +25,16 @@ class AuthService:
     """
     Production authentication coordinator.
 
-    Responsibilities:
-    - User registration
-    - Login orchestration
-    - Logout orchestration
-    - Refresh token orchestration
+    Handles:
+    - Registration
+    - Login
+    - Refresh token rotation
+    - Logout
 
-    Business logic is delegated to:
-    - UserRepository
-    - SessionService
-    - TokenService
+    Delegates:
+    - User data -> UserRepository
+    - Sessions -> SessionService
+    - Tokens -> TokenService
     """
 
     def __init__(
@@ -47,8 +52,9 @@ class AuthService:
         )
 
         self.tokens = TokenService(
-            self.sessions.sessions.db
-            and self.sessions.sessions
+            RefreshTokenRepository(
+                db
+            )
         )
 
 
@@ -57,11 +63,13 @@ class AuthService:
         request: RegisterRequest,
     ):
         """
-        Register a new user.
+        Register new user.
         """
 
-        existing_email = await self.users.get_by_email(
-            request.email
+        existing_email = (
+            await self.users.get_by_email(
+                request.email
+            )
         )
 
         if existing_email:
@@ -69,8 +77,10 @@ class AuthService:
                 "Email already exists."
             )
 
-        existing_username = await self.users.get_by_username(
-            request.username
+        existing_username = (
+            await self.users.get_by_username(
+                request.username
+            )
         )
 
         if existing_username:
@@ -78,7 +88,7 @@ class AuthService:
                 "Username already exists."
             )
 
-        user = await self.users.create(
+        return await self.users.create(
             email=request.email,
             username=request.username,
             full_name=request.full_name,
@@ -87,8 +97,6 @@ class AuthService:
             ),
         )
 
-        return user
-
 
     async def login(
         self,
@@ -96,7 +104,7 @@ class AuthService:
     ):
         """
         Authenticate user and create
-        session + token pair.
+        session + tokens.
         """
 
         user = await self.users.get_by_email(
@@ -132,21 +140,25 @@ class AuthService:
             )
         )
 
-        session = await self.sessions.create_session(
-            user_id=user.id,
-            device_name=request.device_name,
-            device_type=request.device_type,
-            operating_system=request.operating_system,
-            browser=request.browser,
-            ip_address=request.ip_address,
-            user_agent=request.user_agent,
-            expires_at=expires_at,
+        session = (
+            await self.sessions.create_session(
+                user_id=user.id,
+                device_name=request.device_name,
+                device_type=request.device_type,
+                operating_system=request.operating_system,
+                browser=request.browser,
+                ip_address=request.ip_address,
+                user_agent=request.user_agent,
+                expires_at=expires_at,
+            )
         )
 
-        tokens = await self.tokens.create_token_pair(
-            user_id=user.id,
-            session_id=session.id,
-            expires_at=expires_at,
+        tokens = (
+            await self.tokens.create_token_pair(
+                user_id=user.id,
+                session_id=session.id,
+                expires_at=expires_at,
+            )
         )
 
         await self.users.update_last_login(
@@ -165,8 +177,7 @@ class AuthService:
         refresh_token: str,
     ):
         """
-        Rotate refresh token and
-        issue new access token.
+        Rotate refresh token.
         """
 
         expires_at = (
