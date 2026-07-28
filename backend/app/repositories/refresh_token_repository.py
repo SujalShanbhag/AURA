@@ -32,7 +32,8 @@ class RefreshTokenRepository:
         )
 
         self.db.add(token)
-        await self.db.commit()
+
+        await self.db.flush()
         await self.db.refresh(token)
 
         return token
@@ -42,7 +43,10 @@ class RefreshTokenRepository:
         token_id: UUID,
     ) -> RefreshToken | None:
 
-        return await self.db.get(RefreshToken, token_id)
+        return await self.db.get(
+            RefreshToken,
+            token_id,
+        )
 
     async def get_by_hash(
         self,
@@ -56,68 +60,6 @@ class RefreshTokenRepository:
         )
 
         return result.scalar_one_or_none()
-
-    async def revoke(
-        self,
-        token: RefreshToken,
-        *,
-        reason: str,
-        revoked_at: datetime,
-    ) -> RefreshToken:
-
-        token.is_revoked = True
-        token.revoked_reason = reason
-        token.revoked_at = revoked_at
-
-        await self.db.commit()
-        await self.db.refresh(token)
-
-        return token
-
-    async def mark_replaced(
-        self,
-        token: RefreshToken,
-        replaced_at: datetime,
-    ) -> RefreshToken:
-
-        token.replaced_at = replaced_at
-
-        await self.db.commit()
-        await self.db.refresh(token)
-
-        return token
-
-    async def revoke_chain(
-        self,
-        root_token_id: UUID,
-        *,
-        reason: str,
-        revoked_at: datetime,
-    ) -> None:
-
-        result = await self.db.execute(
-            select(RefreshToken).where(
-                (RefreshToken.id == root_token_id)
-                | (RefreshToken.parent_token_id == root_token_id)
-            )
-        )
-
-        tokens = result.scalars().all()
-
-        for token in tokens:
-            token.is_revoked = True
-            token.revoked_reason = reason
-            token.revoked_at = revoked_at
-
-        await self.db.commit()
-
-    async def delete(
-        self,
-        token: RefreshToken,
-    ) -> None:
-
-        await self.db.delete(token)
-        await self.db.commit()
 
     async def list_active_for_user(
         self,
@@ -136,6 +78,65 @@ class RefreshTokenRepository:
         )
 
         return list(result.scalars().all())
+
+    async def revoke(
+        self,
+        token: RefreshToken,
+        *,
+        reason: str,
+        revoked_at: datetime,
+    ) -> RefreshToken:
+
+        token.is_revoked = True
+        token.revoked_reason = reason
+        token.revoked_at = revoked_at
+
+        await self.db.flush()
+        await self.db.refresh(token)
+
+        return token
+
+    async def revoke_chain(
+        self,
+        *,
+        root_token_id: UUID,
+        reason: str,
+        revoked_at: datetime,
+    ) -> int:
+
+        result = await self.db.execute(
+            select(RefreshToken).where(
+                (RefreshToken.id == root_token_id)
+                | (
+                    RefreshToken.parent_token_id
+                    == root_token_id
+                )
+            )
+        )
+
+        tokens = result.scalars().all()
+
+        for token in tokens:
+            token.is_revoked = True
+            token.revoked_reason = reason
+            token.revoked_at = revoked_at
+
+        await self.db.flush()
+
+        return len(tokens)
+
+    async def mark_replaced(
+        self,
+        token: RefreshToken,
+        replaced_at: datetime,
+    ) -> RefreshToken:
+
+        token.replaced_at = replaced_at
+
+        await self.db.flush()
+        await self.db.refresh(token)
+
+        return token
 
     async def cleanup_expired(
         self,
@@ -156,6 +157,14 @@ class RefreshTokenRepository:
             await self.db.delete(token)
             count += 1
 
-        await self.db.commit()
+        await self.db.flush()
 
         return count
+
+    async def delete(
+        self,
+        token: RefreshToken,
+    ) -> None:
+
+        await self.db.delete(token)
+        await self.db.flush()
