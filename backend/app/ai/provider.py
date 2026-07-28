@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC
 from abc import abstractmethod
+from typing import AsyncIterator
 
 from app.ai.models import AIContext
 from app.ai.models import AIResponse
@@ -9,27 +10,23 @@ from app.ai.models import AIResponse
 
 class AIProvider(ABC):
     """
-    Abstract base class for all AI providers.
+    Abstract AI provider interface.
 
-    Every provider (OpenAI, Gemini, Anthropic, Ollama, etc.)
-    must implement this interface.
+    Every AI provider used by AURA
+    must implement this contract.
+
+    Examples:
+    - Gemini
+    - OpenAI
+    - Ollama
+    - Future local models
     """
 
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        """
-        Human-readable provider name.
-        """
-        raise NotImplementedError
 
-    @property
-    @abstractmethod
-    def model(self) -> str:
-        """
-        Active model name.
-        """
-        raise NotImplementedError
+    name: str
+
+    model: str
+
 
     @abstractmethod
     async def generate(
@@ -37,25 +34,35 @@ class AIProvider(ABC):
         context: AIContext,
     ) -> AIResponse:
         """
-        Generate a complete response.
+        Generate a complete AI response.
         """
-        raise NotImplementedError
+
+        pass
+
 
     @abstractmethod
     async def stream(
         self,
         context: AIContext,
-    ):
+    ) -> AsyncIterator[str]:
         """
-        Stream tokens from the provider.
+        Stream response chunks.
 
-        Returns an async iterator.
-        """
-        raise NotImplementedError
-
-    async def health_check(self) -> bool:
-        """
-        Optional provider health check.
+        Used for:
+        - Chat streaming
+        - Voice interaction
+        - Real-time UI
         """
 
-        return True
+        pass
+
+
+    @abstractmethod
+    async def health_check(
+        self,
+    ) -> bool:
+        """
+        Check provider availability.
+        """
+
+        pass
