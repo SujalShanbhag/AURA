@@ -1,90 +1,79 @@
 from __future__ import annotations
 
-from enum import Enum
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
-
-
-class MessageRole(str, Enum):
-    SYSTEM = "system"
-    USER = "user"
-    ASSISTANT = "assistant"
-    TOOL = "tool"
-
-
-class AIProvider(str, Enum):
-    OPENAI = "openai"
-    ANTHROPIC = "anthropic"
-    GOOGLE = "google"
-    OLLAMA = "ollama"
-
-
-class ToolCall(BaseModel):
-    name: str
-    arguments: dict[str, Any] = Field(default_factory=dict)
-
-
-class ToolResult(BaseModel):
-    tool_name: str
-    success: bool
-    output: dict[str, Any] = Field(default_factory=dict)
-    error: str | None = None
-
-
-class ChatMessage(BaseModel):
-    role: MessageRole
-    content: str
-    name: str | None = None
-
-
-class MemoryItem(BaseModel):
-    id: UUID | None = None
-    score: float = 0.0
-    source: str
-    content: str
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class UserProfile(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    user_id: UUID
-    username: str
-    full_name: str
-    language: str
-    timezone: str
-    preferences: dict[str, Any] = Field(default_factory=dict)
+from pydantic import BaseModel
+from pydantic import Field
 
 
 class AIContext(BaseModel):
-    system_prompt: str
-    profile: UserProfile
-    memories: list[MemoryItem] = Field(default_factory=list)
-    conversation: list[ChatMessage] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    """
+    Input context provided to AI providers.
 
+    Contains everything required to generate
+    a response.
+    """
 
-class AIRequest(BaseModel):
     user_id: UUID
-    message: str
+
     conversation_id: UUID | None = None
-    stream: bool = False
-    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    message: str = Field(
+        min_length=1
+    )
+
+    system_prompt: str | None = None
+
+    metadata: dict[str, Any] = Field(
+        default_factory=dict
+    )
+
+    timestamp: datetime
 
 
-class AIUsage(BaseModel):
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
+class TokenUsage(BaseModel):
+    """
+    Token consumption information.
+    """
+
+    input_tokens: int = 0
+
+    output_tokens: int = 0
+
     total_tokens: int = 0
 
 
-class AIResponse(BaseModel):
-    message: str
-    provider: AIProvider
+class AIProviderInfo(BaseModel):
+    """
+    Information about the AI provider used.
+    """
+
+    name: str
+
     model: str
-    usage: AIUsage
-    tool_calls: list[ToolCall] = Field(default_factory=list)
-    tool_results: list[ToolResult] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    latency_ms: float | None = None
+
+
+class AIResponse(BaseModel):
+    """
+    Standard response returned by all AI providers.
+    """
+
+    content: str
+
+    provider: AIProviderInfo
+
+    usage: TokenUsage = Field(
+        default_factory=TokenUsage
+    )
+
+    finish_reason: str | None = None
+
+    metadata: dict[str, Any] = Field(
+        default_factory=dict
+    )
+
+    created_at: datetime
