@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import select
@@ -20,6 +21,7 @@ class UserRepository:
         full_name: str,
         password_hash: str,
     ) -> User:
+
         user = User(
             email=email.lower(),
             username=username,
@@ -28,7 +30,8 @@ class UserRepository:
         )
 
         self.db.add(user)
-        await self.db.commit()
+
+        await self.db.flush()
         await self.db.refresh(user)
 
         return user
@@ -37,12 +40,14 @@ class UserRepository:
         self,
         user_id: UUID,
     ) -> User | None:
+
         return await self.db.get(User, user_id)
 
     async def get_by_email(
         self,
         email: str,
     ) -> User | None:
+
         result = await self.db.execute(
             select(User).where(
                 User.email == email.lower()
@@ -55,6 +60,7 @@ class UserRepository:
         self,
         username: str,
     ) -> User | None:
+
         result = await self.db.execute(
             select(User).where(
                 User.username == username
@@ -66,11 +72,12 @@ class UserRepository:
     async def update_last_login(
         self,
         user: User,
-        login_time,
+        login_time: datetime,
     ) -> User:
+
         user.last_login_at = login_time
 
-        await self.db.commit()
+        await self.db.flush()
         await self.db.refresh(user)
 
         return user
@@ -80,9 +87,10 @@ class UserRepository:
         user: User,
         password_hash: str,
     ) -> User:
+
         user.password_hash = password_hash
 
-        await self.db.commit()
+        await self.db.flush()
         await self.db.refresh(user)
 
         return user
@@ -91,20 +99,10 @@ class UserRepository:
         self,
         user: User,
     ) -> User:
+
         user.is_verified = True
 
-        await self.db.commit()
-        await self.db.refresh(user)
-
-        return user
-
-    async def deactivate(
-        self,
-        user: User,
-    ) -> User:
-        user.is_active = False
-
-        await self.db.commit()
+        await self.db.flush()
         await self.db.refresh(user)
 
         return user
@@ -113,9 +111,22 @@ class UserRepository:
         self,
         user: User,
     ) -> User:
+
         user.is_active = True
 
-        await self.db.commit()
+        await self.db.flush()
+        await self.db.refresh(user)
+
+        return user
+
+    async def deactivate(
+        self,
+        user: User,
+    ) -> User:
+
+        user.is_active = False
+
+        await self.db.flush()
         await self.db.refresh(user)
 
         return user
@@ -124,5 +135,7 @@ class UserRepository:
         self,
         user: User,
     ) -> None:
+
         await self.db.delete(user)
-        await self.db.commit()
+
+        await self.db.flush()
