@@ -13,22 +13,37 @@ from app.core.security import (
     hash_refresh_token,
     verify_password,
 )
-from app.repositories.refresh_token_repository import RefreshTokenRepository
-from app.repositories.session_repository import SessionRepository
-from app.repositories.user_repository import UserRepository
+from app.repositories.refresh_token_repository import (
+    RefreshTokenRepository,
+)
+from app.repositories.session_repository import (
+    SessionRepository,
+)
+from app.repositories.user_repository import (
+    UserRepository,
+)
 from app.schemas.auth import LoginRequest
 from app.schemas.auth import RegisterRequest
 
 
 class AuthService:
     """
-    Production authentication service.
+    Production authentication business service.
 
-    This class contains authentication business logic only.
+    Handles:
+    - Registration
+    - Login
+    - Session creation
+    - Refresh token creation
+
     Database access is delegated to repositories.
+    Transaction ownership remains here.
     """
 
-    def __init__(self, db: AsyncSession):
+    def __init__(
+        self,
+        db: AsyncSession,
+    ):
         self.db = db
 
         self.users = UserRepository(db)
@@ -43,30 +58,34 @@ class AuthService:
         Register a new user.
         """
 
-        existing_email = await self.users.get_by_email(
-            request.email
-        )
+        async with self.db.begin():
 
-        if existing_email:
-            raise ValueError("Email already exists.")
+            existing_email = await self.users.get_by_email(
+                request.email
+            )
 
-        existing_username = await self.users.get_by_username(
-            request.username
-        )
+            if existing_email:
+                raise ValueError(
+                    "Email already exists."
+                )
 
-        if existing_username:
-            raise ValueError("Username already exists.")
+            existing_username = await self.users.get_by_username(
+                request.username
+            )
 
-        password = hash_password(
-            request.password
-        )
+            if existing_username:
+                raise ValueError(
+                    "Username already exists."
+                )
 
-        user = await self.users.create(
-            email=request.email,
-            username=request.username,
-            full_name=request.full_name,
-            password_hash=password,
-        )
+            user = await self.users.create(
+                email=request.email,
+                username=request.username,
+                full_name=request.full_name,
+                password_hash=hash_password(
+                    request.password
+                ),
+            )
 
         return user
 
@@ -75,77 +94,85 @@ class AuthService:
         request: LoginRequest,
     ):
         """
-        Authenticate user and create a session.
+        Authenticate user and create:
+        - Session
+        - Refresh token
+        - Access token
         """
 
-        user = await self.users.get_by_email(
-            request.email
-        )
+        async with self.db.begin():
 
-        if user is None:
-            raise ValueError("Invalid credentials.")
+            user = await self.users.get_by_email(
+                request.email
+            )
 
-        if not user.is_active:
-            raise ValueError("Account is disabled.")
+            if user is None:
+                raise ValueError(
+                    "Invalid credentials."
+                )
 
-        if not verify_password(
-            request.password,
-            user.password_hash,
-        ):
-            raise ValueError("Invalid credentials.")
+            if not user.is_active:
+                raise ValueError(
+                    "Account is disabled."
+                )
 
-        now = datetime.now(timezone.utc)
+            if not verify_password(
+                request.password,
+                user.password_hash,
+            ):
+                raise ValueError(
+                    "Invalid credentials."
+                )
 
-        await self.users.update_last_login(
-            user=user,
-            login_time=now,
-        )
+            now = datetime.now(
+                timezone.utc
+            )
 
-        expires = now + timedelta(
-            days=settings.REFRESH_TOKEN_EXPIRE_DAYS
-        )
+            await self.users.update_last_login(
+                user=user,
+                login_time=now,
+            )
 
-        session = await self.sessions.create(
-            user_id=user.id,
-            refresh_token_id=None,
-            device_name=request.device_name,
-            device_type=request.device_type,
-            operating_system=request.operating_system,
-            browser=request.browser,
-            ip_address=request.ip_address,
-            country=None,
-            city=None,
-            user_agent=request.user_agent,
-            is_current=True,
-            expires_at=expires,
-        )
+            expires_at = (
+                now
+                + timedelta(
+                    days=settings.REFRESH_TOKEN_EXPIRE_DAYS
+                )
+            )
 
-        token_id = generate_token_id()
+            session = await self.sessions.create(
+                user_id=user.id,
+                device_name=request.device_name,
+                device_type=request.device_type,
+                operating_system=request.operating_system,
+                browser=request.browser,
+                ip_address=request.ip_address,
+                country=None,
+                city=None,
+                user_agent=request.user_agent,
+                is_current=True,
+                expires_at=expires_at,
+            )
 
-        refresh_token = create_refresh_token(
-            str(user.id),
-            token_id,
-        )
+            token_id = generate_token_id()
 
-        refresh_hash = hash_refresh_token(
-            refresh_token
-        )
+            refresh_token = create_refresh_token(
+                str(user.id),
+                token_id,
+            )
 
-        refresh = await self.refresh_tokens.create(
-            user_id=user.id,
-            session_id=session.id,
-            token_hash=refresh_hash,
-            expires_at=expires,
-        )
+            refresh = await self.refresh_tokens.create(
+                user_id=user.id,
+                session_id=session.id,
+                token_hash=hash_refresh_token(
+                    refresh_token
+                ),
+                expires_at=expires_at,
+            )
 
-        await self.sessions.attach_refresh_token(
-            session,
-            refresh.id,
-        )
-
-        access_token = create_access_token(
-            str(user.id)
-        )
+            access_token = create_access_token(
+                str(user.id)
+            )
 
         return {
             "user": user,
@@ -154,4 +181,6 @@ class AuthService:
                 "refresh_token": refresh_token,
                 "token_type": "bearer",
             },
+            "session_id": str(session.id),
+            "refresh_token_id": str(refresh.id),
         }
