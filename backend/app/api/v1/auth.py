@@ -1,18 +1,44 @@
 from __future__ import annotations
 
+
+import logging
+
 from uuid import UUID
+
 
 from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import HTTPException
 from fastapi import Request
 from fastapi import status
+
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
+
 from app.core.database import get_db
-from app.schemas.auth import LoginRequest
-from app.schemas.auth import RegisterRequest
+
+from app.core.auth import get_current_user
+
+
+from app.models.user import User
+
+
+from app.schemas.auth import (
+    LoginRequest,
+    RefreshRequest,
+    RegisterRequest,
+)
+
+
 from app.services.auth_service import AuthService
+
+
+
+logger = logging.getLogger(
+    "aura.api.auth"
+)
+
 
 
 router = APIRouter(
@@ -21,14 +47,27 @@ router = APIRouter(
 )
 
 
+
+
+
+# ============================================================
+# Dependency
+# ============================================================
+
+
 def get_auth_service(
     db: AsyncSession = Depends(get_db),
 ) -> AuthService:
-    """
-    Authentication service dependency.
-    """
 
     return AuthService(db)
+
+
+
+
+
+# ============================================================
+# Register
+# ============================================================
 
 
 @router.post(
@@ -36,141 +75,267 @@ def get_auth_service(
     status_code=status.HTTP_201_CREATED,
 )
 async def register(
+
     request: RegisterRequest,
+
     service: AuthService = Depends(
         get_auth_service
     ),
+
 ):
-    """
-    Create a new user account.
-    """
 
     try:
+
         user = await service.register(
             request
         )
 
+
         return {
-            "message": "User registered successfully.",
-            "user": user,
+
+            "message":
+                "User registered successfully.",
+
+
+            "user": {
+
+                "id":
+                    str(user.id),
+
+                "email":
+                    user.email,
+
+                "username":
+                    user.username,
+
+                "full_name":
+                    user.full_name,
+
+            },
+
         }
+
+
 
     except ValueError as exc:
 
+
         raise HTTPException(
+
             status_code=status.HTTP_400_BAD_REQUEST,
+
             detail=str(exc),
+
         )
 
 
+
+
+
+# ============================================================
+# Login
+# ============================================================
+
+
 @router.post(
-    "/login",
+    "/login"
 )
 async def login(
-    request: LoginRequest,
+
+    body: LoginRequest,
+
+    request: Request,
+
     service: AuthService = Depends(
         get_auth_service
     ),
+
 ):
-    """
-    Authenticate user.
-    """
+
+
+    ip_address = (
+
+        request.client.host
+
+        if request.client
+
+        else "unknown"
+
+    )
+
+
+    user_agent = request.headers.get(
+        "User-Agent",
+        "",
+    )
+
+
+    # attach request metadata
+
+    body.ip_address = ip_address
+
+    body.user_agent = user_agent
+
+
 
     try:
 
-        return await service.login(
-            request
+        result = await service.login(
+            body
         )
+
+
+        return {
+
+            "message":
+                "Login successful.",
+
+
+            "user": {
+
+                "id":
+                    str(
+                        result["user"].id
+                    ),
+
+                "email":
+                    result["user"].email,
+
+                "username":
+                    result["user"].username,
+
+            },
+
+
+            "tokens":
+                result["tokens"],
+
+        }
+
+
 
     except ValueError as exc:
 
+
         raise HTTPException(
+
             status_code=status.HTTP_401_UNAUTHORIZED,
+
             detail=str(exc),
+
         )
 
 
+
+
+
+# ============================================================
+# Refresh Token
+# ============================================================
+
+
 @router.post(
-    "/refresh",
+    "/refresh"
 )
 async def refresh(
-    refresh_token: str,
+
+    request: RefreshRequest,
+
     service: AuthService = Depends(
         get_auth_service
     ),
+
 ):
-    """
-    Rotate refresh token.
-    """
 
     try:
 
         return await service.refresh(
-            refresh_token
+
+            request.refresh_token
+
         )
+
 
     except ValueError as exc:
 
+
         raise HTTPException(
+
             status_code=status.HTTP_401_UNAUTHORIZED,
+
             detail=str(exc),
+
         )
 
 
+
+
+
+# ============================================================
+# Logout Current Session
+# ============================================================
+
+
 @router.post(
-    "/logout/{session_id}",
+    "/logout/{session_id}"
 )
 async def logout(
+
     session_id: UUID,
+
     service: AuthService = Depends(
         get_auth_service
     ),
+
 ):
-    """
-    Logout current device.
-    """
 
-    try:
+    await service.logout(
+        session_id
+    )
 
-        result = await service.logout(
-            session_id
-        )
 
-        return {
-            "message": "Logged out successfully.",
-            "result": result,
-        }
+    return {
 
-    except ValueError as exc:
+        "message":
+            "Logged out successfully."
 
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
-        )
+    }
+
+
+
+
+
+# ============================================================
+# Logout All Devices
+# ============================================================
 
 
 @router.post(
-    "/logout-all/{user_id}",
+    "/logout-all"
 )
 async def logout_all(
-    user_id: UUID,
+
+    current_user: User = Depends(
+        get_current_user
+    ),
+
     service: AuthService = Depends(
         get_auth_service
     ),
+
 ):
-    """
-    Logout all devices.
-    """
 
-    try:
 
-        return await service.logout_all(
-            user_id
-        )
+    await service.logout_all(
 
-    except ValueError as exc:
+        current_user.id
 
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
-        )
+    )
+
+
+    return {
+
+        "message":
+            "All sessions logged out successfully."
+
+    }

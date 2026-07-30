@@ -1,19 +1,24 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean
-from sqlalchemy import DateTime
-from sqlalchemy import ForeignKey
-from sqlalchemy import String
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+)
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped
-from sqlalchemy.orm import mapped_column
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import (
+    Mapped,
+    mapped_column,
+    relationship,
+)
 
-from app.db.base import Base
+from app.core.database import Base
 
 if TYPE_CHECKING:
     from app.models.session import Session
@@ -21,13 +26,30 @@ if TYPE_CHECKING:
 
 
 class RefreshToken(Base):
+    """
+    Refresh token storage.
+
+    Supports:
+    - Token rotation
+    - Token revocation
+    - Token history tracking
+    """
+
     __tablename__ = "refresh_tokens"
+
+    # =========================================================
+    # Primary Key
+    # =========================================================
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         primary_key=True,
         default=uuid.uuid4,
     )
+
+    # =========================================================
+    # Foreign Keys
+    # =========================================================
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -36,7 +58,6 @@ class RefreshToken(Base):
             ondelete="CASCADE",
         ),
         nullable=False,
-        index=True,
     )
 
     session_id: Mapped[uuid.UUID] = mapped_column(
@@ -46,14 +67,6 @@ class RefreshToken(Base):
             ondelete="CASCADE",
         ),
         nullable=False,
-        index=True,
-    )
-
-    token_hash: Mapped[str] = mapped_column(
-        String(64),
-        nullable=False,
-        unique=True,
-        index=True,
     )
 
     parent_token_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -63,13 +76,23 @@ class RefreshToken(Base):
             ondelete="SET NULL",
         ),
         nullable=True,
+    )
+
+    # =========================================================
+    # Token Data
+    # =========================================================
+
+    token_hash: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        unique=True,
         index=True,
     )
 
     is_revoked: Mapped[bool] = mapped_column(
         Boolean,
-        default=False,
         nullable=False,
+        default=False,
     )
 
     revoked_reason: Mapped[str | None] = mapped_column(
@@ -77,10 +100,14 @@ class RefreshToken(Base):
         nullable=True,
     )
 
+    # =========================================================
+    # Dates
+    # =========================================================
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        default=lambda: datetime.now().astimezone(),
+        default=lambda: datetime.now(timezone.utc),
     )
 
     expires_at: Mapped[datetime] = mapped_column(
@@ -98,21 +125,37 @@ class RefreshToken(Base):
         nullable=True,
     )
 
+    # =========================================================
+    # Relationships
+    # =========================================================
+
     user: Mapped["User"] = relationship(
         "User",
         back_populates="refresh_tokens",
         lazy="selectin",
     )
 
+    # Session that owns this token
     session: Mapped["Session"] = relationship(
         "Session",
         back_populates="refresh_tokens",
+        foreign_keys=[session_id],
         lazy="selectin",
     )
 
+    # Session.current_refresh_token
+    current_for_session: Mapped["Session | None"] = relationship(
+        "Session",
+        foreign_keys="Session.refresh_token_id",
+        uselist=False,
+        viewonly=True,
+    )
+
+    # Token rotation chain
     parent: Mapped["RefreshToken | None"] = relationship(
         "RefreshToken",
-        remote_side="RefreshToken.id",
+        remote_side=[id],
+        foreign_keys=[parent_token_id],
         back_populates="children",
         lazy="selectin",
     )
@@ -123,3 +166,36 @@ class RefreshToken(Base):
         cascade="all, delete-orphan",
         lazy="selectin",
     )
+
+    # =========================================================
+    # Indexes
+    # =========================================================
+
+    __table_args__ = (
+        Index(
+            "idx_refresh_token_user_active",
+            "user_id",
+            "is_revoked",
+        ),
+        Index(
+            "idx_refresh_token_session",
+            "session_id",
+        ),
+        Index(
+            "idx_refresh_token_expiry",
+            "expires_at",
+        ),
+    )
+
+    # =========================================================
+    # Representation
+    # =========================================================
+
+    def __repr__(self) -> str:
+        return (
+            f"<RefreshToken("
+            f"id={self.id}, "
+            f"user_id={self.user_id}, "
+            f"revoked={self.is_revoked}"
+            f")>"
+        )

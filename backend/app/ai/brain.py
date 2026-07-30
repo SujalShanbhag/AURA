@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
-from datetime import timezone
+from datetime import datetime, timezone
+from typing import Any, AsyncIterator
 from uuid import UUID
 
-from app.ai.models import AIContext
-from app.ai.models import AIResponse
+from app.ai.models import AIContext, AIResponse
 from app.ai.orchestrator import Orchestrator
-from app.memory.manager import MemoryManager
+from app.memory.memory_service import MemoryService
+from app.memory.models import ConversationMemory
 
 
 logger = logging.getLogger(
@@ -16,211 +16,295 @@ logger = logging.getLogger(
 )
 
 
+SYSTEM_PROMPT = (
+    "You are AURA, a helpful personal AI companion. "
+    "Use conversation history and stored memories "
+    "to provide personalized, natural, and accurate responses."
+)
+
+
 class AuraBrain:
     """
-    Central intelligence layer of AURA.
+    Main intelligence layer.
 
     Responsibilities:
-
-    - Manage conversations
     - Retrieve memories
     - Build AI context
-    - Execute AI generation
-    - Store new memories
-
-    Future integrations:
-
-    - Emotion engine
-    - Voice engine
-    - Vision engine
-    - Personality engine
+    - Call AI providers
+    - Store conversations
+    - Store long-term memories
     """
-
 
     def __init__(
         self,
+        *,
         orchestrator: Orchestrator,
-        memory: MemoryManager,
-    ):
+        memory: MemoryService,
+    ) -> None:
 
         self.orchestrator = orchestrator
-
         self.memory = memory
 
-
+    # ==========================================================
+    # Chat
+    # ==========================================================
 
     async def chat(
         self,
         *,
         user_id: UUID,
-        message: str,
         conversation_id: UUID,
-        metadata: dict | None = None,
+        message: str,
+        metadata: dict[str, Any] | None = None,
     ) -> AIResponse:
         """
-        Process user conversation.
+        Execute one AI conversation turn.
         """
 
+        message = message.strip()
 
-        # -------------------------------------------------
-        # 1. Store user message
-        # -------------------------------------------------
+        if not message:
+            raise ValueError(
+                "Message cannot be empty."
+            )
 
-        await self.memory.remember_conversation(
-            user_id=user_id,
-            conversation_id=conversation_id,
-            role="user",
-            message=message,
-            metadata=metadata,
-        )
+        metadata = metadata or {}
 
+        try:
 
-        # -------------------------------------------------
-        # 2. Retrieve recent context
-        # -------------------------------------------------
+            # --------------------------------------------------
+            # Store user message
+            # --------------------------------------------------
 
-        recent_context = (
-            await self.memory.get_recent_context(
+            await self.memory.save_conversation(
+                ConversationMemory(
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    role="user",
+                    message=message,
+                    metadata=metadata,
+                )
+            )
+
+            # --------------------------------------------------
+            # Conversation history
+            # --------------------------------------------------
+
+            history = await self.memory.conversation_history(
                 user_id=user_id,
                 conversation_id=conversation_id,
+                limit=20,
             )
-        )
 
+            history_text: list[str] = []
 
-        # -------------------------------------------------
-        # 3. Retrieve long-term memories
-        # -------------------------------------------------
+            for item in history:
+                if hasattr(item, "message"):
+                    history_text.append(item.message)
+                else:
+                    history_text.append(str(item))
 
-        long_term = (
-            await self.memory.get_long_term_memory(
+            # --------------------------------------------------
+            # Semantic memories
+            # --------------------------------------------------
+
+            semantic_results = await self.memory.semantic_search(
                 user_id=user_id,
+                query=message,
+                limit=5,
             )
-        )
 
-
-        memory_context = {
-            "recent": recent_context,
-            "long_term": [
+            semantic_memory = [
                 item.content
-                for item in long_term
-            ],
-        }
+                for item in semantic_results
+            ]
 
+            # --------------------------------------------------
+            # Build AI context
+            # --------------------------------------------------
 
+            context = AIContext(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                message=message,
+                system_prompt=SYSTEM_PROMPT,
+                metadata={
+                    **metadata,
+                    "recent_history": history_text,
+                    "semantic_memory": semantic_memory,
+                },
+                timestamp=datetime.now(
+                    timezone.utc
+                ),
+            )
 
-        # -------------------------------------------------
-        # 4. Build AI context
-        # -------------------------------------------------
+            # --------------------------------------------------
+            # Generate response
+            # --------------------------------------------------
 
-        context = AIContext(
+            response = await self.orchestrator.generate(
+                context
+            )
+
+            # --------------------------------------------------
+            # Store assistant message
+            # --------------------------------------------------
+
+            await self.memory.save_conversation(
+                ConversationMemory(
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    message=response.content,
+                    metadata={
+                        "provider": response.provider.name,
+                        "model": response.provider.model,
+                    },
+                )
+            )
+
+            return response
+
+        except Exception as exc:
+
+            logger.exception(
+                "AURA chat failed."
+            )
+
+            raise RuntimeError(
+                "Failed to process AI request."
+            ) from exc
+
+    # ==========================================================
+    # Long-Term Memory
+    # ==========================================================
+
+    async def remember(
+        self,
+        *,
+        user_id: UUID,
+        content: str,
+        importance: float = 0.5,
+        metadata: dict[str, Any] | None = None,
+    ) -> Any:
+        """
+        Store long-term memory.
+        """
+
+        return await self.memory.save_long_term_memory(
             user_id=user_id,
-
-            conversation_id=conversation_id,
-
-            message=message,
-
-            system_prompt=(
-                "You are AURA, a personal AI companion. "
-                "Use available memory to personalize responses."
-            ),
-
-            metadata={
-                "memory": memory_context,
-                **(
-                    metadata or {}
-                ),
-            },
-
-            timestamp=datetime.now(
-                timezone.utc
-            ),
+            content=content,
+            importance=importance,
+            metadata=metadata or {},
         )
 
-
-        # -------------------------------------------------
-        # 5. Generate response
-        # -------------------------------------------------
-
-        response = await self.orchestrator.generate(
-            context
-        )
-
-
-        # -------------------------------------------------
-        # 6. Store AI response
-        # -------------------------------------------------
-
-        await self.memory.remember_conversation(
-            user_id=user_id,
-            conversation_id=conversation_id,
-            role="assistant",
-            message=response.content,
-            metadata={
-                "provider": (
-                    response.provider.name
-                ),
-
-                "model": (
-                    response.provider.model
-                ),
-            },
-        )
-
-
-        logger.info(
-            "Conversation completed",
-            extra={
-                "user_id": str(user_id),
-                "conversation_id": str(
-                    conversation_id
-                ),
-            },
-        )
-
-
-        return response
-
-
+    # ==========================================================
+    # Streaming Chat
+    # ==========================================================
 
     async def stream_chat(
         self,
         *,
         user_id: UUID,
-        message: str,
         conversation_id: UUID,
-    ):
+        message: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> AsyncIterator[str]:
         """
-        Streaming chat.
+        Stream AI response.
+        """
 
-        Memory storage is handled after
-        streaming integration is added.
-        """
+        message = message.strip()
+
+        if not message:
+            raise ValueError(
+                "Message cannot be empty."
+            )
+
+        metadata = metadata or {}
+
+        await self.memory.save_conversation(
+            ConversationMemory(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                role="user",
+                message=message,
+                metadata=metadata,
+            )
+        )
+
+        history = await self.memory.conversation_history(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            limit=20,
+        )
+
+        history_text = [
+            item.message if hasattr(item, "message") else str(item)
+            for item in history
+        ]
+
+        semantic_results = await self.memory.semantic_search(
+            user_id=user_id,
+            query=message,
+            limit=5,
+        )
+
+        semantic_memory = [
+            item.content
+            for item in semantic_results
+        ]
 
         context = AIContext(
             user_id=user_id,
-
             conversation_id=conversation_id,
-
             message=message,
-
-            timestamp=datetime.now(
-                timezone.utc
-            ),
+            system_prompt=SYSTEM_PROMPT,
+            metadata={
+                **metadata,
+                "recent_history": history_text,
+                "semantic_memory": semantic_memory,
+            },
         )
 
+        full_response = ""
 
         async for chunk in self.orchestrator.stream(
             context
         ):
+            full_response += chunk
             yield chunk
 
+        await self.memory.save_conversation(
+            ConversationMemory(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                role="assistant",
+                message=full_response,
+                metadata={
+                    "streamed": True,
+                },
+            )
+        )
 
+    # ==========================================================
+    # Health
+    # ==========================================================
 
     async def health_check(
         self,
-    ):
+    ) -> dict[str, bool]:
         """
-        Check AI providers.
+        Check AI provider health.
         """
 
-        return await self.orchestrator.health_check()
+        try:
+            return await self.orchestrator.health_check()
+
+        except Exception:
+
+            logger.exception(
+                "AURA health check failed."
+            )
+
+            return {}

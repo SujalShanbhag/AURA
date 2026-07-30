@@ -39,6 +39,14 @@ class RegisterRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
+    """
+    Client login request.
+
+    Network-related values such as IP address and
+    User-Agent are obtained from the HTTP request,
+    not from the request body.
+    """
+
     email: EmailStr
 
     password: str = Field(
@@ -59,10 +67,6 @@ class LoginRequest(BaseModel):
     )
 
     browser: str | None = None
-
-    ip_address: str
-
-    user_agent: str
 
 
 # ---------------------------------------------------------------------
@@ -116,7 +120,9 @@ class VerifyEmailRequest(BaseModel):
 
 
 class UserResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(
+        from_attributes=True
+    )
 
     id: UUID
 
@@ -199,7 +205,7 @@ class SessionResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------
-# Message
+# Generic Message
 # ---------------------------------------------------------------------
 
 

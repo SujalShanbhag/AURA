@@ -1,110 +1,70 @@
 from __future__ import annotations
 
-from datetime import datetime
-from datetime import timezone
+import logging
 from uuid import UUID
 
-from sqlalchemy import delete
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.memory.models import ConversationMemory, MemoryType
 from app.models.memory import Memory
-from app.memory.models import ConversationMemory
+
+
+logger = logging.getLogger("aura.memory.postgres")
 
 
 class PostgresMemory:
     """
-    Long-term memory storage.
+    PostgreSQL memory repository.
 
-    Uses PostgreSQL for:
+    Responsible only for database persistence.
 
-    - Permanent conversation history
-    - User memories
-    - Important information
+    Transaction ownership belongs to MemoryService.
     """
-
 
     def __init__(
         self,
         db: AsyncSession,
-    ):
+    ) -> None:
         self.db = db
 
+    # =========================================================
+    # Conversation Memory
+    # =========================================================
 
     async def save_conversation(
         self,
         memory: ConversationMemory,
     ) -> Memory:
         """
-        Save conversation permanently.
+        Save one conversation message.
         """
 
         record = Memory(
             user_id=memory.user_id,
-            conversation_id=(
-                memory.conversation_id
-            ),
-            memory_type="conversation",
+            conversation_id=memory.conversation_id,
+            memory_type=MemoryType.CONVERSATION.value,
             role=memory.role,
-            content=memory.message,
-            metadata_json=(
-                memory.metadata
-            ),
-            created_at=datetime.now(
-                timezone.utc
-            ),
+            content=memory.message,  # FIXED
+            metadata_json=memory.metadata,
+            created_at=memory.created_at,
         )
 
+        try:
+            self.db.add(record)
 
-        self.db.add(
-            record
-        )
+            await self.db.flush()
+            await self.db.refresh(record)
 
-        await self.db.commit()
+            return record
 
-        await self.db.refresh(
-            record
-        )
+        except Exception:
+            logger.exception("Failed to save conversation.")
+            raise
 
-        return record
-
-
-
-    async def get_conversation(
-        self,
-        *,
-        user_id: UUID,
-        conversation_id: UUID,
-        limit: int = 50,
-    ) -> list[Memory]:
-        """
-        Retrieve conversation history.
-        """
-
-        query = (
-            select(Memory)
-            .where(
-                Memory.user_id == user_id,
-                Memory.conversation_id
-                == conversation_id,
-            )
-            .order_by(
-                Memory.created_at.asc()
-            )
-            .limit(limit)
-        )
-
-
-        result = await self.db.execute(
-            query
-        )
-
-
-        return list(
-            result.scalars().all()
-        )
-
-
+    # =========================================================
+    # Long-Term Memory
+    # =========================================================
 
     async def save_user_memory(
         self,
@@ -115,36 +75,56 @@ class PostgresMemory:
         metadata: dict | None = None,
     ) -> Memory:
         """
-        Save important user information.
+        Save a long-term memory.
         """
 
         record = Memory(
             user_id=user_id,
-            memory_type="long_term",
+            memory_type=MemoryType.LONG_TERM.value,
             content=content,
             importance=importance,
-            metadata_json=(
-                metadata or {}
-            ),
-            created_at=datetime.now(
-                timezone.utc
-            ),
+            metadata_json=metadata or {},
         )
 
+        try:
+            self.db.add(record)
 
-        self.db.add(
-            record
+            await self.db.flush()
+            await self.db.refresh(record)
+
+            return record
+
+        except Exception:
+            logger.exception("Failed to save long-term memory.")
+            raise
+
+    # =========================================================
+    # Retrieval
+    # =========================================================
+
+    async def get_conversation(
+        self,
+        *,
+        user_id: UUID,
+        conversation_id: UUID,
+        limit: int = 100,
+    ) -> list[Memory]:
+        """
+        Return conversation messages in chronological order.
+        """
+
+        result = await self.db.execute(
+            select(Memory)
+            .where(
+                Memory.user_id == user_id,
+                Memory.conversation_id == conversation_id,
+                Memory.memory_type == MemoryType.CONVERSATION.value,
+            )
+            .order_by(Memory.created_at.asc())
+            .limit(limit)
         )
 
-        await self.db.commit()
-
-        await self.db.refresh(
-            record
-        )
-
-        return record
-
-
+        return list(result.scalars().all())
 
     async def get_user_memories(
         self,
@@ -153,48 +133,139 @@ class PostgresMemory:
         limit: int = 20,
     ) -> list[Memory]:
         """
-        Retrieve saved user memories.
+        Return long-term memories ordered by importance.
         """
 
-        query = (
+        result = await self.db.execute(
             select(Memory)
             .where(
                 Memory.user_id == user_id,
-                Memory.memory_type
-                == "long_term",
+                Memory.memory_type == MemoryType.LONG_TERM.value,
             )
             .order_by(
-                Memory.importance.desc()
+                Memory.importance.desc(),
+                Memory.created_at.desc(),
             )
             .limit(limit)
         )
 
+        return list(result.scalars().all())
+
+    async def get_memory(
+        self,
+        memory_id: UUID,
+    ) -> Memory | None:
 
         result = await self.db.execute(
-            query
+            select(Memory).where(
+                Memory.id == memory_id
+            )
         )
 
+        return result.scalar_one_or_none()
 
-        return list(
-            result.scalars().all()
-        )
+    # =========================================================
+    # Qdrant Synchronization
+    # =========================================================
 
+    async def update_qdrant_point(
+        self,
+        *,
+        memory: Memory,
+        point_id: str,
+    ) -> Memory:
+        """
+        Store Qdrant point ID after vector insertion.
+        """
 
+        memory.qdrant_point_id = point_id
+
+        await self.db.flush()
+        await self.db.refresh(memory)
+
+        return memory
+
+    # =========================================================
+    # Delete
+    # =========================================================
 
     async def delete_memory(
         self,
         memory_id: UUID,
     ) -> None:
         """
-        Remove stored memory.
+        Delete one memory.
         """
 
         await self.db.execute(
-            delete(Memory)
-            .where(
+            delete(Memory).where(
                 Memory.id == memory_id
             )
         )
 
+        await self.db.flush()
 
-        await self.db.commit()
+    async def delete_conversation(
+        self,
+        *,
+        user_id: UUID,
+        conversation_id: UUID,
+    ) -> None:
+        """
+        Delete an entire conversation.
+        """
+
+        await self.db.execute(
+            delete(Memory).where(
+                Memory.user_id == user_id,
+                Memory.conversation_id == conversation_id,
+                Memory.memory_type == MemoryType.CONVERSATION.value,
+            )
+        )
+
+        await self.db.flush()
+
+    # =========================================================
+    # Statistics
+    # =========================================================
+
+    async def memory_count(
+        self,
+        *,
+        user_id: UUID,
+    ) -> int:
+        """
+        Count long-term memories for a user.
+        """
+
+        result = await self.db.execute(
+            select(func.count())
+            .select_from(Memory)
+            .where(
+                Memory.user_id == user_id,
+                Memory.memory_type == MemoryType.LONG_TERM.value,
+            )
+        )
+
+        return int(result.scalar() or 0)
+
+    # =========================================================
+    # Health
+    # =========================================================
+
+    async def health_check(
+        self,
+    ) -> bool:
+        """
+        Verify database connectivity.
+        """
+
+        try:
+            await self.db.execute(select(1))
+            return True
+
+        except Exception:
+            logger.exception(
+                "PostgreSQL memory health check failed."
+            )
+            return False

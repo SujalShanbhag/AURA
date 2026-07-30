@@ -1,19 +1,24 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean
-from sqlalchemy import DateTime
-from sqlalchemy import ForeignKey
-from sqlalchemy import String
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+)
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped
-from sqlalchemy.orm import mapped_column
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import (
+    Mapped,
+    mapped_column,
+    relationship,
+)
 
-from app.db.base import Base
+from app.core.database import Base
 
 if TYPE_CHECKING:
     from app.models.refresh_token import RefreshToken
@@ -21,13 +26,32 @@ if TYPE_CHECKING:
 
 
 class Session(Base):
+    """
+    AURA user device session model.
+
+    Stores:
+    - Login devices
+    - Active sessions
+    - Device information
+    - Expiration
+    - Revocation tracking
+    """
+
     __tablename__ = "sessions"
+
+    # =========================================================
+    # Primary Key
+    # =========================================================
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         primary_key=True,
         default=uuid.uuid4,
     )
+
+    # =========================================================
+    # Foreign Keys
+    # =========================================================
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -36,26 +60,41 @@ class Session(Base):
             ondelete="CASCADE",
         ),
         nullable=False,
-        index=True,
     )
 
+    refresh_token_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "refresh_tokens.id",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
+
+    # =========================================================
+    # Device Information
+    # =========================================================
+
     device_name: Mapped[str] = mapped_column(
-        String(120),
+        String(100),
         nullable=False,
+        default="Unknown Device",
     )
 
     device_type: Mapped[str] = mapped_column(
         String(50),
         nullable=False,
+        default="unknown",
     )
 
     operating_system: Mapped[str] = mapped_column(
         String(100),
         nullable=False,
+        default="unknown",
     )
 
     browser: Mapped[str | None] = mapped_column(
-        String(120),
+        String(100),
         nullable=True,
     )
 
@@ -75,33 +114,29 @@ class Session(Base):
     )
 
     user_agent: Mapped[str] = mapped_column(
-        String(1024),
+        String(500),
         nullable=False,
     )
 
+    # =========================================================
+    # Status
+    # =========================================================
+
     is_current: Mapped[bool] = mapped_column(
         Boolean,
-        default=False,
         nullable=False,
+        default=True,
     )
 
     is_revoked: Mapped[bool] = mapped_column(
         Boolean,
+        nullable=False,
         default=False,
-        nullable=False,
     )
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        default=lambda: datetime.now().astimezone(),
-    )
-
-    last_seen_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        default=lambda: datetime.now().astimezone(),
-    )
+    # =========================================================
+    # Dates
+    # =========================================================
 
     expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -113,15 +148,83 @@ class Session(Base):
         nullable=True,
     )
 
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    # =========================================================
+    # Relationships
+    # =========================================================
+
     user: Mapped["User"] = relationship(
         "User",
         back_populates="sessions",
         lazy="selectin",
     )
 
+    # Current refresh token (1:1)
+    refresh_token: Mapped["RefreshToken | None"] = relationship(
+        "RefreshToken",
+        foreign_keys=[refresh_token_id],
+        uselist=False,
+        lazy="selectin",
+        post_update=True,
+    )
+
+    # Historical refresh tokens (1:N)
     refresh_tokens: Mapped[list["RefreshToken"]] = relationship(
         "RefreshToken",
         back_populates="session",
-        cascade="all, delete-orphan",
+        foreign_keys="RefreshToken.session_id",
         lazy="selectin",
+        cascade="all, delete-orphan",
     )
+
+    # =========================================================
+    # Constraints & Indexes
+    # =========================================================
+
+    __table_args__ = (
+        Index(
+            "idx_session_user_active",
+            "user_id",
+            "is_revoked",
+        ),
+        Index(
+            "idx_session_expiry",
+            "expires_at",
+        ),
+        Index(
+            "idx_session_last_seen",
+            "last_seen_at",
+        ),
+    )
+
+    # =========================================================
+    # Representation
+    # =========================================================
+
+    def __repr__(self) -> str:
+        return (
+            f"<Session("
+            f"id={self.id}, "
+            f"user_id={self.user_id}, "
+            f"device={self.device_name!r}, "
+            f"revoked={self.is_revoked}"
+            f")>"
+        )

@@ -1,3 +1,6 @@
+from uuid import UUID
+
+from aura.backend.app.models import user
 from pydantic import BaseModel
 from pydantic import EmailStr
 
@@ -22,15 +25,17 @@ class UserLogin(BaseModel):
 
 class UserResponse(BaseModel):
 
-    id: int
+    id: UUID
 
     username: str
 
-    email: EmailStr
+    email: str
 
     full_name: str
 
     avatar: str | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = {
+        "from_attributes": True
+    }
+    "user": UserResponse.model_validate(user)
