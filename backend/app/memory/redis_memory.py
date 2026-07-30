@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
-from datetime import timezone
+import logging
+from typing import Any
 from uuid import UUID
 
 from redis.asyncio import Redis
@@ -10,16 +10,19 @@ from redis.asyncio import Redis
 from app.memory.models import ConversationMemory
 
 
+logger = logging.getLogger(
+    "aura.memory.redis"
+)
+
+
 class RedisMemory:
     """
-    Short-term memory storage.
+    Redis short-term memory.
 
-    Uses Redis for:
-    - Recent conversation context
-    - Temporary user state
-    - Fast retrieval
-
-    Data automatically expires.
+    Stores:
+    - Recent conversations
+    - User session state
+    - Temporary cache
     """
 
     def __init__(
@@ -28,22 +31,21 @@ class RedisMemory:
         *,
         ttl_seconds: int = 86400,
         max_messages: int = 20,
-    ):
+    ) -> None:
+
         self.redis = redis
-
         self.ttl_seconds = ttl_seconds
-
         self.max_messages = max_messages
 
+    # ==========================================================
+    # Keys
+    # ==========================================================
 
     def _conversation_key(
         self,
         user_id: UUID,
         conversation_id: UUID,
     ) -> str:
-        """
-        Generate isolated Redis key.
-        """
 
         return (
             f"aura:memory:"
@@ -51,13 +53,26 @@ class RedisMemory:
             f"{conversation_id}"
         )
 
+    def _state_key(
+        self,
+        user_id: UUID,
+    ) -> str:
+
+        return (
+            f"aura:state:"
+            f"{user_id}"
+        )
+
+    # ==========================================================
+    # Conversation Memory
+    # ==========================================================
 
     async def add_message(
         self,
         memory: ConversationMemory,
     ) -> None:
         """
-        Store a conversation message.
+        Append a message to Redis conversation history.
         """
 
         key = self._conversation_key(
@@ -65,45 +80,51 @@ class RedisMemory:
             memory.conversation_id,
         )
 
-
         payload = {
             "role": memory.role,
             "message": memory.message,
             "metadata": memory.metadata,
-            "created_at": (
-                memory.created_at
-                .isoformat()
-            ),
+            "created_at": memory.created_at.isoformat(),
         }
 
+        try:
 
-        await self.redis.rpush(
-            key,
-            json.dumps(payload),
-        )
+            async with self.redis.pipeline() as pipe:
 
+                (
+                    pipe.rpush(
+                        key,
+                        json.dumps(payload),
+                    )
+                    .ltrim(
+                        key,
+                        -self.max_messages,
+                        -1,
+                    )
+                    .expire(
+                        key,
+                        self.ttl_seconds,
+                    )
+                )
 
-        await self.redis.ltrim(
-            key,
-            -self.max_messages,
-            -1,
-        )
+                await pipe.execute()
 
+        except Exception:
 
-        await self.redis.expire(
-            key,
-            self.ttl_seconds,
-        )
+            logger.exception(
+                "Failed to store Redis conversation."
+            )
 
+            raise
 
     async def get_recent_messages(
         self,
         *,
         user_id: UUID,
         conversation_id: UUID,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """
-        Retrieve recent conversation context.
+        Retrieve recent conversation history.
         """
 
         key = self._conversation_key(
@@ -111,19 +132,32 @@ class RedisMemory:
             conversation_id,
         )
 
-
         messages = await self.redis.lrange(
             key,
             0,
             -1,
         )
 
+        history: list[dict[str, Any]] = []
 
-        return [
-            json.loads(message)
-            for message in messages
-        ]
+        for item in messages:
 
+            try:
+
+                if isinstance(item, bytes):
+                    item = item.decode("utf-8")
+
+                history.append(
+                    json.loads(item)
+                )
+
+            except Exception:
+
+                logger.warning(
+                    "Skipping invalid Redis message."
+                )
+
+        return history
 
     async def clear_conversation(
         self,
@@ -132,70 +166,146 @@ class RedisMemory:
         conversation_id: UUID,
     ) -> None:
         """
-        Delete temporary memory.
+        Remove cached conversation.
         """
 
-        key = self._conversation_key(
-            user_id,
-            conversation_id,
-        )
-
-
         await self.redis.delete(
-            key
+            self._conversation_key(
+                user_id,
+                conversation_id,
+            )
         )
 
+    async def message_count(
+        self,
+        *,
+        user_id: UUID,
+    ) -> int:
+        """
+        Count cached messages.
+        """
+
+        pattern = (
+            f"aura:memory:{user_id}:*"
+        )
+
+        total = 0
+
+        async for key in self.redis.scan_iter(
+            match=pattern,
+        ):
+            total += await self.redis.llen(
+                key
+            )
+
+        return total
+
+    # ==========================================================
+    # User State
+    # ==========================================================
 
     async def update_state(
         self,
         *,
         user_id: UUID,
-        state: dict,
+        state: dict[str, Any],
         ttl_seconds: int | None = None,
-    ):
+    ) -> None:
         """
-        Store temporary user state.
+        Save temporary user state.
         """
-
-        key = (
-            f"aura:state:"
-            f"{user_id}"
-        )
-
 
         await self.redis.set(
-            key,
+            self._state_key(user_id),
             json.dumps(state),
-            ex=(
-                ttl_seconds
-                or self.ttl_seconds
-            ),
+            ex=ttl_seconds or self.ttl_seconds,
         )
-
 
     async def get_state(
         self,
         user_id: UUID,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """
-        Retrieve temporary state.
+        Retrieve temporary user state.
         """
-
-        key = (
-            f"aura:state:"
-            f"{user_id}"
-        )
-
 
         value = await self.redis.get(
-            key
+            self._state_key(user_id)
         )
-
 
         if value is None:
             return {}
 
+        try:
 
-        return json.loads(
-            value
+            if isinstance(value, bytes):
+                value = value.decode("utf-8")
+
+            return json.loads(value)
+
+        except Exception:
+
+            logger.warning(
+                "Invalid Redis state."
+            )
+
+            return {}
+
+    async def delete_state(
+        self,
+        user_id: UUID,
+    ) -> None:
+        """
+        Delete cached user state.
+        """
+
+        await self.redis.delete(
+            self._state_key(user_id)
         )
+
+    # ==========================================================
+    # Utilities
+    # ==========================================================
+
+    async def refresh_conversation(
+        self,
+        *,
+        user_id: UUID,
+        conversation_id: UUID,
+    ) -> None:
+        """
+        Refresh conversation TTL.
+        """
+
+        await self.redis.expire(
+            self._conversation_key(
+                user_id,
+                conversation_id,
+            ),
+            self.ttl_seconds,
+        )
+
+    # ==========================================================
+    # Health
+    # ==========================================================
+
+    async def health_check(
+        self,
+    ) -> bool:
+        """
+        Verify Redis connectivity.
+        """
+
+        try:
+
+            await self.redis.ping()
+
+            return True
+
+        except Exception:
+
+            logger.exception(
+                "Redis health check failed."
+            )
+
+            return False

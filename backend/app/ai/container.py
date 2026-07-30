@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 
 from qdrant_client import AsyncQdrantClient
@@ -9,38 +10,43 @@ from app.ai.brain import AuraBrain
 from app.ai.orchestrator import Orchestrator
 from app.ai.provider_registry import ProviderRegistry
 from app.ai.providers.gemini import GeminiProvider
-from app.ai.providers.openai import OpenAIProvider
 from app.ai.providers.ollama import OllamaProvider
+from app.ai.providers.openai import OpenAIProvider
+
 from app.core.config import settings
-from app.memory.manager import MemoryManager
+from app.core.database import AsyncSessionLocal
+
+from app.memory.embedding_service import EmbeddingService
+from app.memory.memory_service import MemoryService
 from app.memory.qdrant_memory import QdrantMemory
 from app.memory.redis_memory import RedisMemory
-from app.memory.postgres_memory import PostgresMemory
-from app.core.database import AsyncSessionLocal
+
+logger = logging.getLogger("aura.ai.container")
 
 
 class AIContainer:
     """
-    Production AURA dependency container.
-
-    Creates:
-
-    - AI Providers
-    - AI Orchestrator
-    - Memory Systems
-    - AURA Brain
+    Global dependency container.
     """
 
+    def __init__(self) -> None:
 
-    def __init__(self):
-
-        self.registry = (
-            ProviderRegistry()
-        )
-
-
+        self.registry = ProviderRegistry()
         self._register_providers()
 
+        if self.registry.count() == 0:
+            raise RuntimeError("No AI providers are configured.")
+
+        self.orchestrator = Orchestrator(
+            registry=self.registry,
+            primary_provider=settings.AI_PRIMARY_PROVIDER,
+            fallback_providers=settings.AI_FALLBACK_PROVIDERS,
+            max_retries=settings.AI_MAX_RETRIES,
+        )
+
+        # -----------------------------
+        # Redis
+        # -----------------------------
 
         self.redis_client = Redis(
             host=settings.REDIS_HOST,
@@ -49,164 +55,150 @@ class AIContainer:
             decode_responses=True,
         )
 
+        self.redis_memory = RedisMemory(self.redis_client)
 
-        self.redis_memory = RedisMemory(
-            self.redis_client
-        )
-
+        # -----------------------------
+        # Qdrant
+        # -----------------------------
 
         self.qdrant_client = AsyncQdrantClient(
-            url=settings.QDRANT_URL
+            url=settings.QDRANT_URL,
+            api_key=getattr(settings, "QDRANT_API_KEY", None),
         )
-
 
         self.qdrant_memory = QdrantMemory(
             client=self.qdrant_client,
-            collection_name=(
-                settings.QDRANT_COLLECTION
-            ),
-            vector_size=(
-                settings.QDRANT_VECTOR_SIZE
-            ),
+            collection_name=settings.QDRANT_COLLECTION,
+            vector_size=settings.QDRANT_VECTOR_SIZE,
         )
 
+        # -----------------------------
+        # Embeddings
+        # -----------------------------
 
-        self.postgres_memory = None
+        self.embedding_service = EmbeddingService()
 
+        # Created during startup
+        self.db = None
+        self.memory: MemoryService | None = None
+        self.brain: AuraBrain | None = None
 
-        self.memory_manager = None
+        self._initialized = False
 
+    # =====================================================
+    # Register AI Providers
+    # =====================================================
 
-        self.orchestrator = Orchestrator(
-            registry=self.registry,
+    def _register_providers(self) -> None:
 
-            primary_provider=(
-                settings.AI_PRIMARY_PROVIDER
-            ),
+        if settings.GEMINI_API_KEY:
+            self.registry.register(GeminiProvider())
 
-            fallback_providers=(
-                settings.AI_FALLBACK_PROVIDERS
-            ),
+        if settings.OPENAI_API_KEY:
+            self.registry.register(OpenAIProvider())
 
-            max_retries=(
-                settings.AI_MAX_RETRIES
-            ),
+        if getattr(settings, "OLLAMA_ENABLED", False):
+            self.registry.register(OllamaProvider())
+
+        logger.info(
+            "Registered providers: %s",
+            self.registry.list_providers(),
         )
 
+    # =====================================================
+    # Startup
+    # =====================================================
 
-        self.brain = None
+    async def initialize(self) -> None:
 
+        if self._initialized:
+            return
 
+        logger.info("Initializing AURA...")
 
-    def _register_providers(
-        self,
-    ):
-        """
-        Register AI providers.
-        """
+        await self.qdrant_memory.initialize()
 
-        self.registry.register(
-            GeminiProvider()
+        # Database session
+        self.db = AsyncSessionLocal()
+
+        # Memory service
+        self.memory = MemoryService(
+            db=self.db,
+            embedding_service=self.embedding_service,
+            qdrant_memory=self.qdrant_memory,
         )
 
-
-        self.registry.register(
-            OpenAIProvider()
-        )
-
-
-        self.registry.register(
-            OllamaProvider()
-        )
-
-
-
-    async def initialize_memory(
-        self,
-    ):
-        """
-        Initialize database-backed memory.
-
-        Called during application startup.
-        """
-
-        db = AsyncSessionLocal()
-
-
-        self.postgres_memory = (
-            PostgresMemory(
-                db
-            )
-        )
-
-
-        self.memory_manager = MemoryManager(
-            redis_memory=self.redis_memory,
-
-            postgres_memory=(
-                self.postgres_memory
-            ),
-
-            qdrant_memory=(
-                self.qdrant_memory
-            ),
-        )
-
-
+        # Brain
         self.brain = AuraBrain(
             orchestrator=self.orchestrator,
-
-            memory=self.memory_manager,
+            memory=self.memory,
         )
 
+        self._initialized = True
+
+        logger.info("AURA initialized successfully.")
+
+    # =====================================================
+    # Shutdown
+    # =====================================================
+
+    async def shutdown(self) -> None:
+
+        logger.info("Shutting down AURA...")
+
+        try:
+            await self.registry.shutdown()
+        except Exception:
+            logger.exception("Provider shutdown failed.")
+
+        try:
+            if self.memory:
+                await self.memory.close()
+        except Exception:
+            logger.exception("Memory shutdown failed.")
+
+        try:
+            await self.embedding_service.close()
+        except Exception:
+            logger.exception("Embedding shutdown failed.")
+
+        try:
+            await self.redis_client.aclose()
+        except Exception:
+            logger.exception("Redis shutdown failed.")
+
+        try:
+            await self.qdrant_memory.close()
+        except Exception:
+            logger.exception("Qdrant shutdown failed.")
+
+        try:
+            if self.db:
+                await self.db.close()
+        except Exception:
+            logger.exception("Database shutdown failed.")
+
+        self._initialized = False
+
+        logger.info("AURA shutdown complete.")
 
 
-    def get_brain(
-        self,
-    ) -> AuraBrain:
-        """
-        Return initialized AURA Brain.
-        """
+# =====================================================
+# Singleton
+# =====================================================
 
-        if self.brain is None:
-            raise RuntimeError(
-                "AI Container not initialized."
-            )
-
-
-        return self.brain
-
-
-
-@lru_cache
+@lru_cache(maxsize=1)
 def get_ai_container() -> AIContainer:
-    """
-    Singleton container.
-    """
-
     return AIContainer()
 
 
+# =====================================================
+# FastAPI Lifecycle
+# =====================================================
 
-async def initialize_ai():
-    """
-    Application startup hook.
-    """
-
-    container = (
-        get_ai_container()
-    )
-
-    await container.initialize_memory()
+async def initialize_ai() -> None:
+    await get_ai_container().initialize()
 
 
-
-def get_aura_brain() -> AuraBrain:
-    """
-    FastAPI dependency.
-    """
-
-    return (
-        get_ai_container()
-        .get_brain()
-    )
+async def shutdown_ai() -> None:
+    await get_ai_container().shutdown()

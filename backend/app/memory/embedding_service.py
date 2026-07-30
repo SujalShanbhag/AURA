@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from typing import List
 
 from openai import AsyncOpenAI
 
@@ -17,128 +16,130 @@ class EmbeddingService:
     """
     Text embedding generation service.
 
-    Converts text into vector embeddings
-    for semantic memory search.
+    Converts text into vector embeddings for
+    semantic memory search.
 
     Supports:
-    - OpenAI embeddings
+    - OpenAI Embeddings
     - Future local embedding models
     """
 
+    def __init__(self) -> None:
 
-    def __init__(
-        self,
-    ):
+        self.model = settings.EMBEDDING_MODEL
 
         self.client = AsyncOpenAI(
-            api_key=settings.OPENAI_API_KEY
+            api_key=settings.OPENAI_API_KEY,
+            timeout=60.0,
         )
 
-        self.model = (
-            settings.EMBEDDING_MODEL
-        )
-
+    # ==========================================================
+    # Single Embedding
+    # ==========================================================
 
     async def create_embedding(
         self,
         text: str,
-    ) -> List[float]:
+    ) -> list[float]:
         """
-        Generate vector embedding.
-
-        Example:
-
-        "I like AI projects"
-
-        becomes:
-
-        [0.23, 0.81, ...]
+        Generate a single embedding.
         """
 
-        if not text.strip():
+        text = text.strip()
 
+        if not text:
             raise ValueError(
                 "Text cannot be empty."
             )
 
-
         try:
 
-            response = (
-                await self.client.embeddings.create(
-                    model=self.model,
-                    input=text,
-                )
+            response = await self.client.embeddings.create(
+                model=self.model,
+                input=text,
             )
 
+            embedding = response.data[0].embedding
 
-            return (
-                response
-                .data[0]
-                .embedding
+            logger.debug(
+                "Embedding generated (%d dimensions).",
+                len(embedding),
             )
 
+            return embedding
 
         except Exception as exc:
 
             logger.exception(
-                "Embedding generation failed",
-                exc_info=exc,
+                "Embedding generation failed."
             )
 
             raise RuntimeError(
                 "Embedding service failed."
             ) from exc
 
-
+    # ==========================================================
+    # Batch Embeddings
+    # ==========================================================
 
     async def create_embeddings(
         self,
         texts: list[str],
     ) -> list[list[float]]:
         """
-        Generate embeddings in batch.
+        Generate embeddings for multiple texts.
         """
 
         if not texts:
-
             return []
 
+        cleaned = [
+            text.strip()
+            for text in texts
+            if text.strip()
+        ]
+
+        if not cleaned:
+            return []
 
         try:
 
-            response = (
-                await self.client.embeddings.create(
-                    model=self.model,
-                    input=texts,
-                )
+            response = await self.client.embeddings.create(
+                model=self.model,
+                input=cleaned,
             )
 
-
-            return [
+            embeddings = [
                 item.embedding
                 for item in response.data
             ]
 
+            logger.debug(
+                "Generated %d embeddings.",
+                len(embeddings),
+            )
+
+            return embeddings
 
         except Exception as exc:
 
             logger.exception(
-                "Batch embedding failed",
-                exc_info=exc,
+                "Batch embedding generation failed."
             )
 
             raise RuntimeError(
-                "Batch embedding failed."
+                "Batch embedding generation failed."
             ) from exc
 
-
+    # ==========================================================
+    # Health Check
+    # ==========================================================
 
     async def health_check(
         self,
     ) -> bool:
         """
-        Check embedding availability.
+        Verify OpenAI connectivity.
         """
 
         try:
@@ -147,7 +148,23 @@ class EmbeddingService:
 
             return True
 
-
         except Exception:
 
+            logger.exception(
+                "Embedding service health check failed."
+            )
+
             return False
+
+    # ==========================================================
+    # Cleanup
+    # ==========================================================
+
+    async def close(
+        self,
+    ) -> None:
+        """
+        Close underlying HTTP client.
+        """
+
+        await self.client.close()

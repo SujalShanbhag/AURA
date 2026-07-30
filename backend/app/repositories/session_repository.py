@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import select
@@ -10,13 +10,21 @@ from app.models.session import Session
 
 
 class SessionRepository:
-    def __init__(self, db: AsyncSession):
+    """
+    Database operations for user sessions.
+    """
+
+    def __init__(
+        self,
+        db: AsyncSession,
+    ):
         self.db = db
 
     async def create(
         self,
         *,
         user_id: UUID,
+        refresh_token_id: UUID | None = None,
         device_name: str,
         device_type: str,
         operating_system: str,
@@ -29,8 +37,11 @@ class SessionRepository:
         expires_at: datetime,
     ) -> Session:
 
+        now = datetime.now(timezone.utc)
+
         session = Session(
             user_id=user_id,
+            refresh_token_id=refresh_token_id,
             device_name=device_name,
             device_type=device_type,
             operating_system=operating_system,
@@ -40,7 +51,10 @@ class SessionRepository:
             city=city,
             user_agent=user_agent,
             is_current=is_current,
+            is_revoked=False,
             expires_at=expires_at,
+            created_at=now,
+            last_seen_at=now,
         )
 
         self.db.add(session)
@@ -55,25 +69,42 @@ class SessionRepository:
         session_id: UUID,
     ) -> Session | None:
 
-        return await self.db.get(Session, session_id)
+        return await self.db.get(
+            Session,
+            session_id,
+        )
 
     async def list_user_sessions(
         self,
         user_id: UUID,
     ) -> list[Session]:
 
+        now = datetime.now(timezone.utc)
+
         result = await self.db.execute(
             select(Session)
             .where(
                 Session.user_id == user_id,
                 Session.is_revoked.is_(False),
+                Session.expires_at > now,
             )
-            .order_by(
-                Session.last_seen_at.desc()
-            )
+            .order_by(Session.last_seen_at.desc())
         )
 
         return list(result.scalars().all())
+
+    async def attach_refresh_token(
+        self,
+        session: Session,
+        refresh_token_id: UUID,
+    ) -> Session:
+
+        session.refresh_token_id = refresh_token_id
+
+        await self.db.flush()
+        await self.db.refresh(session)
+
+        return session
 
     async def update_last_seen(
         self,
@@ -90,23 +121,26 @@ class SessionRepository:
 
     async def revoke(
         self,
-        session: Session,
-        revoked_at: datetime,
-    ) -> Session:
+        session_id: UUID,
+    ) -> bool:
+
+        session = await self.get_by_id(session_id)
+
+        if session is None:
+            return False
 
         session.is_revoked = True
-        session.revoked_at = revoked_at
         session.is_current = False
+        session.revoked_at = datetime.now(timezone.utc)
 
         await self.db.flush()
         await self.db.refresh(session)
 
-        return session
+        return True
 
     async def revoke_all(
         self,
         user_id: UUID,
-        revoked_at: datetime,
     ) -> None:
 
         result = await self.db.execute(
@@ -116,12 +150,12 @@ class SessionRepository:
             )
         )
 
-        sessions = result.scalars().all()
+        now = datetime.now(timezone.utc)
 
-        for session in sessions:
+        for session in result.scalars():
             session.is_revoked = True
-            session.revoked_at = revoked_at
             session.is_current = False
+            session.revoked_at = now
 
         await self.db.flush()
 

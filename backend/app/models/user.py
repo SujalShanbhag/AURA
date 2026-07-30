@@ -1,26 +1,46 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean
-from sqlalchemy import DateTime
-from sqlalchemy import String
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Index,
+    String,
+)
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped
-from sqlalchemy.orm import mapped_column
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import (
+    Mapped,
+    mapped_column,
+    relationship,
+)
 
-from app.db.base import Base
+from app.core.database import Base
 
 if TYPE_CHECKING:
+    from app.models.memory import Memory
     from app.models.refresh_token import RefreshToken
     from app.models.session import Session
 
 
 class User(Base):
+    """
+    AURA User database model.
+
+    Stores:
+    - Account information
+    - Authentication data
+    - User preferences
+    - Account status
+    """
+
     __tablename__ = "users"
+
+    # =========================================================
+    # Primary Key
+    # =========================================================
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -28,17 +48,21 @@ class User(Base):
         default=uuid.uuid4,
     )
 
+    # =========================================================
+    # Account Information
+    # =========================================================
+
     email: Mapped[str] = mapped_column(
         String(320),
-        unique=True,
         nullable=False,
+        unique=True,
         index=True,
     )
 
     username: Mapped[str] = mapped_column(
         String(50),
-        unique=True,
         nullable=False,
+        unique=True,
         index=True,
     )
 
@@ -47,10 +71,18 @@ class User(Base):
         nullable=False,
     )
 
+    # =========================================================
+    # Authentication
+    # =========================================================
+
     password_hash: Mapped[str] = mapped_column(
         String(512),
         nullable=False,
     )
+
+    # =========================================================
+    # Profile
+    # =========================================================
 
     avatar_url: Mapped[str | None] = mapped_column(
         String(500),
@@ -68,6 +100,10 @@ class User(Base):
         nullable=False,
         default="UTC",
     )
+
+    # =========================================================
+    # Account Status
+    # =========================================================
 
     is_active: Mapped[bool] = mapped_column(
         Boolean,
@@ -87,23 +123,35 @@ class User(Base):
         default=False,
     )
 
+    # =========================================================
+    # Login Tracking
+    # =========================================================
+
     last_login_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
     )
 
+    # =========================================================
+    # Timestamps
+    # =========================================================
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        default=lambda: datetime.now().astimezone(),
+        default=lambda: datetime.now(timezone.utc),
     )
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        default=lambda: datetime.now().astimezone(),
-        onupdate=lambda: datetime.now().astimezone(),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
     )
+
+    # =========================================================
+    # Relationships
+    # =========================================================
 
     sessions: Mapped[list["Session"]] = relationship(
         "Session",
@@ -118,3 +166,40 @@ class User(Base):
         cascade="all, delete-orphan",
         lazy="selectin",
     )
+
+    memories: Mapped[list["Memory"]] = relationship(
+        "Memory",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+    # =========================================================
+    # Database Indexes
+    # =========================================================
+
+    __table_args__ = (
+        Index(
+            "idx_user_email_username",
+            "email",
+            "username",
+        ),
+        Index(
+            "idx_user_status",
+            "is_active",
+            "is_verified",
+        ),
+    )
+
+    # =========================================================
+    # Representation
+    # =========================================================
+
+    def __repr__(self) -> str:
+        return (
+            f"<User("
+            f"id={self.id}, "
+            f"username={self.username!r}, "
+            f"email={self.email!r}"
+            f")>"
+        )

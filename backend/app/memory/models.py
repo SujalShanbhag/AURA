@@ -5,8 +5,17 @@ from enum import Enum
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+)
 
+
+# ============================================================
+# Memory Types
+# ============================================================
 
 class MemoryType(str, Enum):
     """
@@ -19,14 +28,20 @@ class MemoryType(str, Enum):
     SEMANTIC = "semantic"
 
 
+# ============================================================
+# Base Memory Record
+# ============================================================
+
 class MemoryRecord(BaseModel):
     """
-    Base memory model shared across memory providers.
+    Common memory structure.
     """
 
     model_config = ConfigDict(
         from_attributes=True,
     )
+
+    id: UUID | None = None
 
     user_id: UUID
 
@@ -54,16 +69,40 @@ class MemoryRecord(BaseModel):
 
     updated_at: datetime | None = None
 
+    @field_validator("content")
+    @classmethod
+    def validate_content(
+        cls,
+        value: str,
+    ) -> str:
+        value = value.strip()
+
+        if not value:
+            raise ValueError(
+                "Content cannot be empty."
+            )
+
+        return value
+
+
+# ============================================================
+# Conversation Memory
+# ============================================================
 
 class ConversationMemory(BaseModel):
     """
-    Conversation message exchanged between
-    a user and AURA.
+    Chat message memory.
+
+    Stored in:
+    - PostgreSQL
+    - Redis
     """
 
     model_config = ConfigDict(
         from_attributes=True,
     )
+
+    id: UUID | None = None
 
     user_id: UUID
 
@@ -74,7 +113,7 @@ class ConversationMemory(BaseModel):
         max_length=32,
     )
 
-    message: str = Field(
+    content: str = Field(
         min_length=1,
     )
 
@@ -88,10 +127,53 @@ class ConversationMemory(BaseModel):
         )
     )
 
+    @field_validator("role")
+    @classmethod
+    def validate_role(
+        cls,
+        value: str,
+    ) -> str:
+        value = value.strip().lower()
+
+        allowed = {
+            "user",
+            "assistant",
+            "system",
+            "tool",
+        }
+
+        if value not in allowed:
+            raise ValueError(
+                f"Invalid role '{value}'."
+            )
+
+        return value
+
+    @field_validator("content")
+    @classmethod
+    def validate_content(
+        cls,
+        value: str,
+    ) -> str:
+        value = value.strip()
+
+        if not value:
+            raise ValueError(
+                "Content cannot be empty."
+            )
+
+        return value
+
+
+# ============================================================
+# Semantic Memory
+# ============================================================
 
 class SemanticMemory(BaseModel):
     """
-    Memory stored inside the vector database.
+    Vector database memory object.
+
+    Stored in Qdrant.
     """
 
     model_config = ConfigDict(
@@ -102,7 +184,7 @@ class SemanticMemory(BaseModel):
 
     memory_id: UUID
 
-    text: str
+    content: str
 
     embedding: list[float]
 
@@ -110,10 +192,29 @@ class SemanticMemory(BaseModel):
         default_factory=dict,
     )
 
+    @field_validator("content")
+    @classmethod
+    def validate_content(
+        cls,
+        value: str,
+    ) -> str:
+        value = value.strip()
+
+        if not value:
+            raise ValueError(
+                "Content cannot be empty."
+            )
+
+        return value
+
+
+# ============================================================
+# Search Result
+# ============================================================
 
 class MemorySearchResult(BaseModel):
     """
-    Result returned by semantic search.
+    Qdrant similarity search result.
     """
 
     model_config = ConfigDict(
@@ -124,8 +225,19 @@ class MemorySearchResult(BaseModel):
 
     content: str
 
-    score: float
+    score: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
 
     metadata: dict[str, Any] = Field(
         default_factory=dict,
     )
+
+    @field_validator("content")
+    @classmethod
+    def validate_content(
+        cls,
+        value: str,
+    ) -> str:
+        return value.strip()
